@@ -1,23 +1,27 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted , ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import CategorySummary from '@/components/todos/CategorySummary.vue'
 import TodoForm from '@/components/todos/TodoForm.vue'
 import TodoHeader from '@/components/todos/TodoHeader.vue'
 import TodoList from '@/components/todos/TodoList.vue'
+import {
+  deleteCompletedTodosFromSqlite,
+  deleteTodoFromSqlite,
+  initializeTodoDatabase,
+  insertTodoIntoSqlite,
+  listTodosFromSqlite,
+  updateTodoCompletedInSqlite,
+} from '@/lib/todoSqlite'
 import type { Priority, PriorityOption, StatusFilter, Todo, TodoDraft } from '@/types/todo'
 
 
 const today = new Date().toISOString().slice(0, 10)
 
 
-const search = ref('')
-const statusFilter = ref<StatusFilter>('all')
-const priorityFilter = ref<'all' | Priority>('all')
-const categoryFilter = ref('all')
-const hideCompleted = ref(false)
 
-const todos = ref<Todo[]>([
+
+const defaultTodos = (): Todo[] => [
   {
     id: 1,
     title: 'Learn Vue state and v-model',
@@ -58,7 +62,17 @@ const todos = ref<Todo[]>([
     dueDate: '2026-05-25',
     createdAt: '2026-05-21',
   },
-])
+]
+
+const search = ref('')
+const statusFilter = ref<StatusFilter>('all')
+const priorityFilter = ref<'all' | Priority>('all')
+const categoryFilter = ref('all')
+const hideCompleted = ref(false)
+const isLoadingTodos = ref(true)
+const dataSourceLabel = ref('Browser SQLite')
+const isUsingSqlite = ref(false)
+const todos = ref<Todo[]>([])
 
 const categories = ['Course', 'Teaching', 'Homework', 'Review', 'Personal']
 const priorities:PriorityOption[] = [
@@ -137,7 +151,16 @@ const categoryCounts = computed(() => {
   })
 })
 
-const addTodo = (draft:TodoDraft)=>{
+const refreshTodosFromSqlite = () => {
+  todos.value = listTodosFromSqlite()
+}
+
+const addTodo = async (draft: TodoDraft) => {
+  if (isUsingSqlite.value) {
+    await insertTodoIntoSqlite(draft, today)
+    refreshTodosFromSqlite()
+    return
+  }
 
   todos.value.push({
     id: Date.now(),
@@ -153,14 +176,26 @@ const addTodo = (draft:TodoDraft)=>{
  
 }
 
-const toggleTodo = (id: number) => {
+const toggleTodo = async (id: number) => {
   const todo = todos.value.find((item) => item.id === id)
   if (!todo) return
+
+  if (isUsingSqlite.value) {
+    await updateTodoCompletedInSqlite(id, !todo.completed)
+    refreshTodosFromSqlite()
+    return
+  }
 
   todo.completed = !todo.completed
 }
 
-const deleteTodo = (id: number) => {
+const deleteTodo = async (id: number) => {
+  if (isUsingSqlite.value) {
+    await deleteTodoFromSqlite(id)
+    refreshTodosFromSqlite()
+    return
+  }
+
   todos.value = todos.value.filter((todo) => todo.id !== id)
 }
 
@@ -170,7 +205,12 @@ const completeFilteredTodos = () => {
   })
 }
 
-const clearCompletedTodos = () => {
+const clearCompletedTodos = async () => {
+  if (isUsingSqlite.value) {
+    await deleteCompletedTodosFromSqlite()
+    refreshTodosFromSqlite()
+    return
+  }
   todos.value = todos.value.filter((todo) => !todo.completed)
 }
 
@@ -182,6 +222,29 @@ const resetFilters = () => {
   hideCompleted.value = false
 }
 
+onMounted(async () => {
+  if (import.meta.env.MODE === 'test') {
+    todos.value = defaultTodos()
+    dataSourceLabel.value = 'Seed data'
+    isUsingSqlite.value = false
+    isLoadingTodos.value = false
+    return
+  }
+
+  try {
+    await initializeTodoDatabase(defaultTodos())
+    refreshTodosFromSqlite()
+    dataSourceLabel.value = 'Persistent browser SQLite'
+    isUsingSqlite.value = true
+  } catch {
+    todos.value = defaultTodos()
+    dataSourceLabel.value = 'Seed data'
+    isUsingSqlite.value = false
+  }
+
+  isLoadingTodos.value = false
+})
+
 </script>
 
 <template>
@@ -192,6 +255,17 @@ const resetFilters = () => {
         :active-count="activeTodos.length"
         :completed-count="completedTodos.length"
         :overdue-count="overdueTodos.length"/>
+
+     <div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+        Data source: <span class="font-semibold text-slate-900">{{ dataSourceLabel }}</span>
+      </div>
+
+      <div
+        v-if="isLoadingTodos"
+        class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600"
+      >
+        Loading TODOs from SQLite...
+      </div>
 
       <section class="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
         <aside class="rounded-lg border border-slate-200 bg-white p-5">
